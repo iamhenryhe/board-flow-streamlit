@@ -1,0 +1,42 @@
+name: Collect A-share board-flow snapshots
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/15 1-3,5-7 * * 1-5"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: board-flow-collector
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      TZ: Asia/Shanghai
+      TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Collect snapshot
+        run: python collect_snapshot.py --source rt_k
+
+      - name: Commit updated snapshots
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/minute_snapshots.csv
+          git diff --cached --quiet || git commit -m "Update board-flow snapshots"
+          git push
