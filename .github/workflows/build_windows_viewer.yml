@@ -1,0 +1,30 @@
+name: Build Windows Viewer
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - codex/windows-viewer-build
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install viewer dependencies
+        run: python -m pip install -r requirements_viewer.txt
+
+      - name: Build exe
+        run: python build_windows_viewer.py
+
+      - name: Upload viewer zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: realtime-board-windows-viewer
+          path: dist/实时资金流看板_windows.zip
