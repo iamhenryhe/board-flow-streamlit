@@ -27,4 +27,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: realtime-board-windows-viewer
-          path: dist/实时资金流看板_windows.zip
+          path: dist/RealtimeBoardViewer_windows.zip
