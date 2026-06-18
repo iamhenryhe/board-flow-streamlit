@@ -1,0 +1,6 @@
+{
+  "data_source": "http",
+  "base_url": "http://192.168.1.15:8787/latest",
+  "refresh_seconds": 10,
+  "http_timeout_seconds": 5
+}
