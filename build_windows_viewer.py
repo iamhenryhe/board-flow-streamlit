@@ -7,7 +7,7 @@ import zipfile
 from pathlib import Path
 
 
-APP_NAME = "实时资金流看板"
+APP_NAME = "RealtimeBoardViewer"
 ROOT = Path(__file__).resolve().parent
 DIST = ROOT / "dist"
 
@@ -39,7 +39,7 @@ def main() -> None:
     shutil.copy2(ROOT / "viewer_config_windows.json", config_dst)
 
     exe_path = DIST / f"{APP_NAME}.exe"
-    zip_path = DIST / f"{APP_NAME}_windows.zip"
+    zip_path = DIST / "RealtimeBoardViewer_windows.zip"
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.write(exe_path, exe_path.name)
         archive.write(config_dst, config_dst.name)
