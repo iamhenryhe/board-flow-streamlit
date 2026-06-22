@@ -64,6 +64,13 @@ def load_config() -> dict:
     for path in config_candidates():
         if path.exists():
             return json.loads(path.read_text(encoding="utf-8"))
+    if getattr(sys, "frozen", False):
+        return {
+            "data_source": "http",
+            "base_url": "http://192.168.1.5:8787/latest",
+            "refresh_seconds": 10,
+            "http_timeout_seconds": 5,
+        }
     return {"latest_dir": str(DEFAULT_LATEST_DIR), "refresh_seconds": 10}
 
 
