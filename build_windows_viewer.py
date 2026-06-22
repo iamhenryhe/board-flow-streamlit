@@ -29,6 +29,8 @@ def main() -> None:
             "--clean",
             "--onefile",
             "--windowed",
+            "--icon",
+            str(ROOT / "assets" / "sinowise_logo.ico"),
             "--name",
             APP_NAME,
             "viewer_app.py",
