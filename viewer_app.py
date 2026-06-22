@@ -45,6 +45,7 @@ HEADER_LABELS = {
     "成交额亿": "成交额",
     "近15m成交额亿": "近15m成交额",
     "5m成交额亿": "5m成交额",
+    "1m成交额亿": "1m成交额",
 }
 
 
@@ -322,7 +323,7 @@ class Top5TablePanel(QWidget):
                 return f"{float(value) * 100:.2f}%"
             except Exception:
                 return value
-        if column in {"成交额亿", "近15m成交额亿", "5m成交额亿", "竞价成交额亿", "量比"}:
+        if column in {"成交额亿", "近15m成交额亿", "5m成交额亿", "1m成交额亿", "竞价成交额亿", "量比"}:
             try:
                 return f"{float(value):.2f}"
             except Exception:
@@ -347,6 +348,7 @@ class Top5TablePanel(QWidget):
             "成交额亿": 0.85,
             "近15m成交额亿": 1.25,
             "5m成交额亿": 1.05,
+            "1m成交额亿": 1.05,
             "板块": 0.8,
         }
         total_weight = sum(weights.get(column, 1.0) for column in columns)
