@@ -9,7 +9,7 @@ import urllib.request
 from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt, QTimer
-from PySide6.QtGui import QColor, QFont, QPixmap
+from PySide6.QtGui import QColor, QFont, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -72,6 +72,10 @@ def load_config() -> dict:
             "http_timeout_seconds": 5,
         }
     return {"latest_dir": str(DEFAULT_LATEST_DIR), "refresh_seconds": 10}
+
+
+def resource_path(relative_path: str) -> Path:
+    return Path(getattr(sys, "_MEIPASS", APP_DIR)) / relative_path
 
 
 class LatestDataSource:
@@ -493,6 +497,9 @@ class ViewerWindow(QMainWindow):
         self.refresh_seconds = int(config.get("refresh_seconds") or 10)
 
         self.setWindowTitle("实时资金流看板")
+        icon_path = resource_path("assets/sinowise_logo.ico")
+        if icon_path.exists():
+            self.setWindowIcon(QIcon(str(icon_path)))
         self.resize(1480, 920)
 
         self.status = QLabel("")
@@ -636,6 +643,9 @@ class ViewerWindow(QMainWindow):
 
 def main() -> None:
     app = QApplication(sys.argv)
+    icon_path = resource_path("assets/sinowise_logo.ico")
+    if icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
     window = ViewerWindow()
     window.show()
     sys.exit(app.exec())
