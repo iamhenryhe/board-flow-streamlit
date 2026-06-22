@@ -7,7 +7,7 @@ import zipfile
 from pathlib import Path
 
 
-APP_NAME = "RealtimeBoardViewer"
+APP_NAME = "实时看板"
 ROOT = Path(__file__).resolve().parent
 DIST = ROOT / "dist"
 
@@ -31,6 +31,8 @@ def main() -> None:
             "--windowed",
             "--icon",
             str(ROOT / "assets" / "sinowise_logo.ico"),
+            "--add-data",
+            f"{ROOT / 'assets' / 'sinowise_logo.ico'};assets",
             "--name",
             APP_NAME,
             "viewer_app.py",
