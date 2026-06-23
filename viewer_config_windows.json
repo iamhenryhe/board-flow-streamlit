@@ -1,6 +1,8 @@
 {
   "data_source": "http",
-  "base_url": "http://192.168.1.15:8787/latest",
+  "base_url": "",
+  "auto_discover": true,
+  "discovery_port": 8787,
   "refresh_seconds": 10,
-  "http_timeout_seconds": 5
+  "http_timeout_seconds": 3
 }
