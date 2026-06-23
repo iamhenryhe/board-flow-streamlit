@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import csv
 import json
+import socket
 import sys
 import tempfile
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt, QTimer
@@ -67,9 +69,11 @@ def load_config() -> dict:
     if getattr(sys, "frozen", False):
         return {
             "data_source": "http",
-            "base_url": "http://192.168.1.5:8787/latest",
+            "base_url": "",
+            "auto_discover": True,
+            "discovery_port": 8787,
             "refresh_seconds": 10,
-            "http_timeout_seconds": 5,
+            "http_timeout_seconds": 3,
         }
     return {"latest_dir": str(DEFAULT_LATEST_DIR), "refresh_seconds": 10}
 
@@ -82,7 +86,9 @@ class LatestDataSource:
     def __init__(self, config: dict) -> None:
         self.mode = str(config.get("data_source") or "").strip().lower()
         self.base_url = str(config.get("base_url") or "").strip().rstrip("/")
-        if self.base_url and not self.mode:
+        self.auto_discover = bool(config.get("auto_discover", False))
+        self.discovery_port = int(config.get("discovery_port") or 8787)
+        if (self.base_url or self.auto_discover) and not self.mode:
             self.mode = "http"
         if self.mode != "http":
             self.mode = "local"
@@ -98,12 +104,56 @@ class LatestDataSource:
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
     def url_for(self, file_name: str) -> str:
+        if not self.base_url:
+            raise RuntimeError("未找到服务器")
         return f"{self.base_url}/{file_name}"
 
-    def fetch_bytes(self, file_name: str) -> bytes:
+    def fetch_bytes(self, file_name: str, timeout: float | None = None) -> bytes:
         request = urllib.request.Request(self.url_for(file_name), headers={"Cache-Control": "no-cache"})
-        with self.opener.open(request, timeout=self.timeout) as response:
+        with self.opener.open(request, timeout=self.timeout if timeout is None else timeout) as response:
             return response.read()
+
+    def local_prefixes(self) -> list[str]:
+        prefixes = {"192.168.1"}
+        try:
+            host = socket.gethostname()
+            for _, _, addresses in socket.gethostbyname_ex(host):
+                for address in addresses:
+                    parts = address.split(".")
+                    if len(parts) == 4 and parts[0] in {"10", "172", "192"}:
+                        prefixes.add(".".join(parts[:3]))
+        except Exception:
+            pass
+        return sorted(prefixes)
+
+    def probe_base_url(self, base_url: str) -> str | None:
+        try:
+            request = urllib.request.Request(f"{base_url}/status.json", headers={"Cache-Control": "no-cache"})
+            with self.opener.open(request, timeout=0.45) as response:
+                raw = response.read()
+            data = json.loads(raw.decode("utf-8"))
+            if isinstance(data, dict) and ("status_updated_at" in data or "schedule_text" in data):
+                return base_url
+        except Exception:
+            return None
+        return None
+
+    def discover_server(self) -> bool:
+        if not self.auto_discover:
+            return False
+        candidates: list[str] = []
+        for prefix in self.local_prefixes():
+            candidates.extend(f"http://{prefix}.{host}:{self.discovery_port}/latest" for host in range(1, 255))
+        seen: set[str] = set()
+        unique_candidates = [url for url in candidates if not (url in seen or seen.add(url))]
+        with ThreadPoolExecutor(max_workers=64) as executor:
+            futures = {executor.submit(self.probe_base_url, url): url for url in unique_candidates}
+            for future in as_completed(futures):
+                found = future.result()
+                if found:
+                    self.base_url = found
+                    return True
+        return False
 
     def atomic_write(self, file_name: str, payload: bytes) -> None:
         target = self.latest_dir / file_name
@@ -117,6 +167,8 @@ class LatestDataSource:
             self.last_error = ""
             return True
         try:
+            if not self.base_url and not self.discover_server():
+                raise RuntimeError("没有发现实时看板服务器")
             status_raw = self.fetch_bytes("status.json")
             changed = status_raw != self.last_status_raw
             missing = any(not (self.latest_dir / name).exists() for name in REMOTE_FILES)
@@ -134,7 +186,26 @@ class LatestDataSource:
             self.last_error = ""
             return True
         except Exception as exc:
-            self.last_error = str(exc)
+            first_error = str(exc)
+            if self.discover_server():
+                try:
+                    status_raw = self.fetch_bytes("status.json")
+                    self.atomic_write("status.json", status_raw)
+                    for file_name in REMOTE_FILES:
+                        if file_name == "status.json":
+                            continue
+                        try:
+                            self.atomic_write(file_name, self.fetch_bytes(file_name))
+                        except urllib.error.HTTPError as http_exc:
+                            if http_exc.code != 404:
+                                raise
+                    self.last_status_raw = status_raw
+                    self.last_error = ""
+                    return True
+                except Exception as retry_exc:
+                    self.last_error = str(retry_exc)
+                    return False
+            self.last_error = first_error
             return False
 
 
