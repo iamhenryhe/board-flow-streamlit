@@ -411,8 +411,8 @@ class Top5TablePanel(QWidget):
     def display_label(self, column: str) -> str:
         label = HEADER_LABELS.get(column, column)
         if self.sort_column == column:
-            label = f"{label} {'↓' if self.sort_desc else '↑'}"
-        return label
+            return f"{label} {'▼' if self.sort_desc else '▲'}"
+        return f"{label} ▼"
 
     def format_value(self, column: str, value: str) -> str:
         if "涨幅" in column:
