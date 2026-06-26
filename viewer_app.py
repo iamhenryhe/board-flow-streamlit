@@ -8,6 +8,7 @@ import tempfile
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, time
 from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt, QTimer
@@ -25,6 +26,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSplitter,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -48,6 +50,8 @@ HEADER_LABELS = {
     "近15m成交额亿": "近15m成交额",
     "5m成交额亿": "5m成交额",
     "1m成交额亿": "1m成交额",
+    "竞价成交额亿": "竞价成交额",
+    "未匹配金额亿": "未匹配金额",
 }
 
 
@@ -380,6 +384,10 @@ class Top5TablePanel(QWidget):
         self.board_source_value_col = board_source_value_col
         self.last_mtime: float | None = None
         self.last_source_mtime: float | None = None
+        self.columns: list[str] = []
+        self.raw_rows: list[dict[str, str]] = []
+        self.sort_column: str | None = None
+        self.sort_desc = True
         self.title_label = QLabel(title)
         self.title_label.setStyleSheet("font-size: 14px; font-weight: 700; color: #202124;")
         self.table = QTableWidget()
@@ -389,6 +397,7 @@ class Top5TablePanel(QWidget):
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.table.horizontalHeader().setStretchLastSection(False)
         self.table.horizontalHeader().setMinimumSectionSize(72)
+        self.table.horizontalHeader().sectionClicked.connect(self.handle_header_clicked)
         self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.table.setStyleSheet(
             "QTableWidget { background: white; gridline-color: #D0D5DD; font-size: 13px; }"
@@ -399,18 +408,76 @@ class Top5TablePanel(QWidget):
         layout.addWidget(self.title_label)
         layout.addWidget(self.table, 1)
 
+    def display_label(self, column: str) -> str:
+        label = HEADER_LABELS.get(column, column)
+        if self.sort_column == column:
+            label = f"{label} {'↓' if self.sort_desc else '↑'}"
+        return label
+
     def format_value(self, column: str, value: str) -> str:
-        if column == "涨幅":
+        if "涨幅" in column:
             try:
                 return f"{float(value) * 100:.2f}%"
             except Exception:
                 return value
-        if column in {"成交额亿", "近15m成交额亿", "5m成交额亿", "1m成交额亿", "竞价成交额亿", "量比"}:
+        if column in {
+            "成交额亿",
+            "近15m成交额亿",
+            "5m成交额亿",
+            "1m成交额亿",
+            "竞价净额亿",
+            "竞价成交额亿",
+            "未匹配金额亿",
+            "量比",
+        }:
             try:
                 return f"{float(value):.2f}"
             except Exception:
                 return value
+        if column.endswith("数") or column.endswith("排名") or column == "覆盖股票数":
+            try:
+                return str(int(float(value)))
+            except Exception:
+                return value
         return value
+
+    def numeric_value(self, row: dict[str, str], column: str) -> float | None:
+        if column == "股票代码":
+            return None
+        value = str(row.get(column, "")).replace("%", "").replace(",", "").strip()
+        if not value:
+            return None
+        try:
+            return float(value)
+        except Exception:
+            return None
+
+    def sorted_rows(self) -> list[dict[str, str]]:
+        rows = list(self.raw_rows)
+        if not self.sort_column:
+            return rows
+        column = self.sort_column
+        has_numeric = any(self.numeric_value(row, column) is not None for row in rows)
+        if has_numeric:
+            def numeric_key(row: dict[str, str]) -> float:
+                value = self.numeric_value(row, column)
+                if value is None:
+                    return float("-inf") if self.sort_desc else float("inf")
+                return value
+
+            return sorted(rows, key=numeric_key, reverse=self.sort_desc)
+        return sorted(rows, key=lambda row: str(row.get(column, "")), reverse=self.sort_desc)
+
+    def handle_header_clicked(self, section: int) -> None:
+        if section < 0 or section >= len(self.columns):
+            return
+        column = self.columns[section]
+        if self.sort_column == column:
+            self.sort_desc = not self.sort_desc
+        else:
+            self.sort_column = column
+            self.sort_desc = True
+        self.render_table()
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -431,7 +498,15 @@ class Top5TablePanel(QWidget):
             "近15m成交额亿": 1.25,
             "5m成交额亿": 1.05,
             "1m成交额亿": 1.05,
-            "板块": 0.8,
+            "竞价净额亿": 1.0,
+            "竞价成交额亿": 1.05,
+            "未匹配金额亿": 1.08,
+            "平均竞价涨幅": 1.05,
+            "强势股数": 0.8,
+            "正向股票数": 0.85,
+            "负向股票数": 0.85,
+            "覆盖股票数": 0.85,
+            "板块": 0.95,
         }
         total_weight = sum(weights.get(column, 1.0) for column in columns)
         width = max(720, self.table.viewport().width() - 2)
@@ -512,9 +587,16 @@ class Top5TablePanel(QWidget):
                     if board in boards:
                         filtered.append(row)
                 rows = filtered
+        self.columns = columns
+        self.raw_rows = rows
+        self.render_table()
+
+    def render_table(self) -> None:
+        columns = self.columns
+        rows = self.sorted_rows()
         self.table.clear()
         self.table.setColumnCount(len(columns))
-        self.table.setHorizontalHeaderLabels([HEADER_LABELS.get(column, column) for column in columns])
+        self.table.setHorizontalHeaderLabels([self.display_label(column) for column in columns])
         for index, column in enumerate(columns):
             self.table.horizontalHeaderItem(index).setData(Qt.ItemDataRole.UserRole, column)
         self.table.setRowCount(len(rows))
@@ -537,9 +619,6 @@ class Top5TablePanel(QWidget):
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 font = QFont()
                 font.setPointSize(13)
-                if twenty and column in {"股票名称", "股票代码"}:
-                    font.setBold(True)
-                    item.setForeground(QColor("#C1121F"))
                 item.setFont(font)
                 if column == "涨幅":
                     try:
@@ -566,6 +645,7 @@ class ViewerWindow(QMainWindow):
         self.data_source = LatestDataSource(config)
         self.latest_dir = self.data_source.latest_dir
         self.refresh_seconds = int(config.get("refresh_seconds") or 10)
+        self.manual_mode = False
 
         self.setWindowTitle("实时资金流看板")
         icon_path = resource_path("assets/sinowise_logo.ico")
@@ -577,10 +657,14 @@ class ViewerWindow(QMainWindow):
         self.status.setStyleSheet("color: #444;")
         refresh_button = QPushButton("刷新")
         refresh_button.clicked.connect(self.refresh)
-        self.auction_toggle = QPushButton("隐藏竞价")
-        self.auction_toggle.setCheckable(True)
-        self.auction_toggle.setChecked(True)
-        self.auction_toggle.clicked.connect(self.toggle_auction)
+        self.auction_mode_button = QPushButton("竞价看板")
+        self.main_mode_button = QPushButton("盘中看板")
+        for button in (self.auction_mode_button, self.main_mode_button):
+            button.setCheckable(True)
+            button.setMinimumWidth(96)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.auction_mode_button.clicked.connect(lambda: self.set_mode("auction", manual=True))
+        self.main_mode_button.clicked.connect(lambda: self.set_mode("main", manual=True))
 
         self.interval = QComboBox()
         for value in [5, 10, 15, 30, 60]:
@@ -592,12 +676,14 @@ class ViewerWindow(QMainWindow):
 
         topbar = QHBoxLayout()
         topbar.addWidget(self.status, 1)
+        topbar.addWidget(self.auction_mode_button)
+        topbar.addWidget(self.main_mode_button)
         topbar.addWidget(self.interval)
-        topbar.addWidget(self.auction_toggle)
         topbar.addWidget(refresh_button)
 
         self.left_panel = ImagePanel("板块资金流", "board_flow.png", default_zoom=0.28)
         self.right_panel = Top5TablePanel("Top5 强势股", "top5.csv")
+        self.auction_board_panel = Top5TablePanel("竞价板块排行", "auction_board_flow.csv")
         self.top3_panel = Top5TablePanel(
             "Top3 竞价强势股",
             "auction_top5.csv",
@@ -606,64 +692,82 @@ class ViewerWindow(QMainWindow):
             board_source_value_col="竞价净额亿",
         )
         self.auction_panel = ImagePanel("竞价资金流", "auction_board_flow.png", default_zoom="contain")
-        self.auction_panel.setMinimumHeight(520)
-        self.top3_panel.setMinimumHeight(520)
-        self.left_panel.setMinimumHeight(470)
-        self.right_panel.setMinimumHeight(470)
+        self.auction_panel.setMinimumHeight(680)
+        self.auction_board_panel.setMinimumHeight(300)
+        self.top3_panel.setMinimumHeight(320)
+        self.left_panel.setMinimumHeight(660)
+        self.right_panel.setMinimumHeight(660)
 
-        auction_splitter = QSplitter(Qt.Orientation.Horizontal)
-        auction_splitter.addWidget(self.auction_panel)
-        auction_splitter.addWidget(self.top3_panel)
-        auction_splitter.setSizes([680, 820])
-        self.auction_splitter = auction_splitter
+        auction_tables = QSplitter(Qt.Orientation.Vertical)
+        auction_tables.addWidget(self.auction_board_panel)
+        auction_tables.addWidget(self.top3_panel)
+        auction_tables.setSizes([330, 350])
+        self.auction_tables = auction_tables
 
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.addWidget(self.left_panel)
-        splitter.addWidget(self.right_panel)
-        splitter.setSizes([640, 860])
-        self.main_splitter = splitter
+        auction_page = QSplitter(Qt.Orientation.Horizontal)
+        auction_page.addWidget(self.auction_panel)
+        auction_page.addWidget(auction_tables)
+        auction_page.setSizes([670, 810])
+        self.auction_page = auction_page
+
+        main_page = QSplitter(Qt.Orientation.Horizontal)
+        main_page.addWidget(self.left_panel)
+        main_page.addWidget(self.right_panel)
+        main_page.setSizes([660, 840])
+        self.main_page = main_page
+
+        self.stack = QStackedWidget()
+        self.stack.addWidget(auction_page)
+        self.stack.addWidget(main_page)
 
         main_layout = QVBoxLayout()
         main_layout.setContentsMargins(6, 4, 6, 6)
         main_layout.setSpacing(4)
         main_layout.addLayout(topbar)
-        main_layout.addWidget(auction_splitter, 6)
-        main_layout.addWidget(splitter, 9)
+        main_layout.addWidget(self.stack, 1)
 
         root = QWidget()
         root.setLayout(main_layout)
+        root.setMinimumSize(1180, 760)
         self.root_widget = root
-        self.apply_layout_mode()
         page = QScrollArea()
         page.setWidgetResizable(True)
         page.setWidget(root)
         self.setCentralWidget(page)
+        self.set_mode(self.default_mode(), manual=False)
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.refresh)
         self.timer.start(self.refresh_seconds * 1000)
         self.refresh()
 
-    def toggle_auction(self) -> None:
-        visible = self.auction_toggle.isChecked()
-        self.auction_toggle.setText("隐藏竞价" if visible else "显示竞价")
-        self.apply_layout_mode()
+    def default_mode(self) -> str:
+        now = datetime.now().time()
+        if time(9, 15) <= now < time(9, 30):
+            return "auction"
+        return "main"
 
-    def apply_layout_mode(self) -> None:
-        if self.auction_toggle.isChecked():
-            self.root_widget.setMinimumHeight(1040)
-            self.auction_splitter.setVisible(True)
-            self.auction_panel.setVisible(True)
-            self.top3_panel.setVisible(True)
-            self.left_panel.setMinimumHeight(470)
-            self.right_panel.setMinimumHeight(470)
-        else:
-            self.root_widget.setMinimumHeight(680)
-            self.auction_splitter.setVisible(False)
-            self.auction_panel.setVisible(False)
-            self.top3_panel.setVisible(False)
-            self.left_panel.setMinimumHeight(620)
-            self.right_panel.setMinimumHeight(620)
+    def set_mode(self, mode: str, manual: bool = False) -> None:
+        if manual:
+            self.manual_mode = True
+        is_auction = mode == "auction"
+        self.stack.setCurrentIndex(0 if is_auction else 1)
+        self.auction_mode_button.setChecked(is_auction)
+        self.main_mode_button.setChecked(not is_auction)
+        active = (
+            "QPushButton { background: #0B84FF; color: white; border: 1px solid #0B84FF; "
+            "border-radius: 5px; padding: 5px 12px; font-weight: 700; }"
+        )
+        inactive = (
+            "QPushButton { background: white; color: #202124; border: 1px solid #D0D5DD; "
+            "border-radius: 5px; padding: 5px 12px; font-weight: 700; }"
+        )
+        self.auction_mode_button.setStyleSheet(active if is_auction else inactive)
+        self.main_mode_button.setStyleSheet(active if not is_auction else inactive)
+
+    def apply_auto_mode(self) -> None:
+        if not self.manual_mode:
+            self.set_mode(self.default_mode(), manual=False)
 
     def change_interval(self) -> None:
         self.refresh_seconds = int(self.interval.currentData())
@@ -683,14 +787,13 @@ class ViewerWindow(QMainWindow):
         synced = self.data_source.sync()
         self.latest_dir = self.data_source.latest_dir
         self.auction_panel.load_image(self.latest_dir)
+        self.auction_board_panel.load_table(self.latest_dir)
         self.top3_panel.load_table(self.latest_dir)
         self.left_panel.load_image(self.latest_dir)
         self.right_panel.load_table(self.latest_dir)
         status = self.read_status()
-        date_text = (
-            str(status.get("latest_main_time") or status.get("latest_auction_time") or status.get("status_updated_at") or "")[:10]
-            or "未知"
-        )
+        self.apply_auto_mode()
+        date_text = self.latest_status_date(status)
         error = status.get("last_error") or ""
         error_text = f" | 错误：{error}" if error else ""
         mode_map = {
@@ -710,6 +813,17 @@ class ViewerWindow(QMainWindow):
         source_text = " | 来源：远程" if self.data_source.mode == "http" else ""
         sync_error = f" | 连接失败：{self.data_source.last_error}" if not synced and self.data_source.last_error else ""
         self.status.setText(f"当前日期：{date_text}{mode_part}{next_text}{source_text}{error_text}{sync_error}")
+
+    def latest_status_date(self, status: dict) -> str:
+        candidates = [
+            str(status.get("latest_main_time") or ""),
+            str(status.get("latest_auction_time") or ""),
+            str(status.get("status_updated_at") or ""),
+        ]
+        candidates = [item for item in candidates if len(item) >= 10]
+        if not candidates:
+            return "未知"
+        return max(candidates)[:10]
 
 
 def main() -> None:
