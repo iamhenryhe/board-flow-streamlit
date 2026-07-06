@@ -5,6 +5,7 @@ import json
 import socket
 import sys
 import tempfile
+import time as time_module
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -20,6 +21,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMessageBox,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -342,6 +344,13 @@ def normalize_code(code: str) -> str:
     return "".join(ch for ch in str(code) if ch.isdigit()).zfill(6)[-6:]
 
 
+def action_stock_code(code: str) -> str:
+    digits = "".join(ch for ch in str(code) if ch.isdigit())
+    if not digits:
+        return ""
+    return digits.zfill(6)[-6:]
+
+
 def is_20cm_code(code: str) -> bool:
     normalized = normalize_code(code)
     return normalized.startswith(("300", "301", "688", "689"))
@@ -368,6 +377,137 @@ def pct_color(pct: float, code: str) -> tuple[QColor, QColor]:
     return QColor("#FEE4E2"), QColor("#A61B1B")
 
 
+def find_ths_window() -> int | None:
+    if sys.platform != "win32":
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+    enum_callback = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    user32.EnumWindows.argtypes = [enum_callback, wintypes.LPARAM]
+    user32.EnumWindows.restype = wintypes.BOOL
+    user32.IsWindowVisible.argtypes = [wintypes.HWND]
+    user32.IsWindowVisible.restype = wintypes.BOOL
+    user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+    user32.GetWindowTextLengthW.restype = ctypes.c_int
+    user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    user32.GetWindowTextW.restype = ctypes.c_int
+    matches: list[int] = []
+
+    @enum_callback
+    def enum_window(hwnd, _lparam):
+        if not user32.IsWindowVisible(hwnd):
+            return True
+        title_len = user32.GetWindowTextLengthW(hwnd)
+        if title_len <= 0:
+            return True
+        buffer = ctypes.create_unicode_buffer(title_len + 1)
+        user32.GetWindowTextW(hwnd, buffer, title_len + 1)
+        title = buffer.value
+        if "同花顺" in title:
+            matches.append(int(hwnd))
+        return True
+
+    user32.EnumWindows(enum_window, 0)
+    return matches[0] if matches else None
+
+
+def activate_window(hwnd: int) -> bool:
+    if sys.platform != "win32":
+        return False
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+    user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+    user32.ShowWindow.restype = wintypes.BOOL
+    user32.GetForegroundWindow.argtypes = []
+    user32.GetForegroundWindow.restype = wintypes.HWND
+    user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+    user32.AttachThreadInput.argtypes = [wintypes.DWORD, wintypes.DWORD, wintypes.BOOL]
+    user32.AttachThreadInput.restype = wintypes.BOOL
+    user32.BringWindowToTop.argtypes = [wintypes.HWND]
+    user32.BringWindowToTop.restype = wintypes.BOOL
+    user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+    user32.SetForegroundWindow.restype = wintypes.BOOL
+    user32.SetFocus.argtypes = [wintypes.HWND]
+    user32.SetFocus.restype = wintypes.HWND
+    kernel32.GetCurrentThreadId.argtypes = []
+    kernel32.GetCurrentThreadId.restype = wintypes.DWORD
+    sw_restore = 9
+    user32.ShowWindow(wintypes.HWND(hwnd), sw_restore)
+
+    current_thread = kernel32.GetCurrentThreadId()
+    target_process_id = wintypes.DWORD()
+    target_thread = user32.GetWindowThreadProcessId(wintypes.HWND(hwnd), ctypes.byref(target_process_id))
+    foreground_hwnd = user32.GetForegroundWindow()
+    foreground_process_id = wintypes.DWORD()
+    foreground_thread = (
+        user32.GetWindowThreadProcessId(foreground_hwnd, ctypes.byref(foreground_process_id))
+        if foreground_hwnd
+        else 0
+    )
+    attached_threads = []
+    for thread_id in {target_thread, foreground_thread}:
+        if thread_id and thread_id != current_thread:
+            if user32.AttachThreadInput(current_thread, thread_id, True):
+                attached_threads.append(thread_id)
+    try:
+        user32.BringWindowToTop(wintypes.HWND(hwnd))
+        user32.SetForegroundWindow(wintypes.HWND(hwnd))
+        user32.SetFocus(wintypes.HWND(hwnd))
+    finally:
+        for thread_id in attached_threads:
+            user32.AttachThreadInput(current_thread, thread_id, False)
+    time_module.sleep(0.18)
+    return int(user32.GetForegroundWindow()) == hwnd
+
+
+def press_vk(vk_code: int) -> None:
+    import ctypes
+
+    keyeventf_keyup = 0x0002
+    user32 = ctypes.windll.user32
+    user32.keybd_event(vk_code, 0, 0, 0)
+    time_module.sleep(0.025)
+    user32.keybd_event(vk_code, 0, keyeventf_keyup, 0)
+    time_module.sleep(0.025)
+
+
+def send_stock_code_to_ths(code: str) -> None:
+    if sys.platform != "win32":
+        return
+    vk_escape = 0x1B
+    vk_return = 0x0D
+    press_vk(vk_escape)
+    time_module.sleep(0.08)
+    for char in code:
+        press_vk(0x30 + int(char))
+    time_module.sleep(0.08)
+    press_vk(vk_return)
+
+
+def open_stock_in_ths(code: str, parent: QWidget | None = None) -> None:
+    stock_code = action_stock_code(code)
+    if not stock_code:
+        QMessageBox.warning(parent, "无法打开同花顺", "这一行没有有效股票代码。")
+        return
+    if sys.platform != "win32":
+        QMessageBox.information(parent, "仅支持 Windows", "双击跳转同花顺只在 Windows 客户端生效。")
+        return
+    hwnd = find_ths_window()
+    if not hwnd:
+        QMessageBox.warning(parent, "未找到同花顺", "请先打开同花顺客户端，再双击股票名称或代码。")
+        return
+    if not activate_window(hwnd):
+        QMessageBox.warning(parent, "无法激活同花顺", "没有切换到同花顺窗口，请先点一下同花顺后再试。")
+        return
+    send_stock_code_to_ths(stock_code)
+
+
 class Top5TablePanel(QWidget):
     def __init__(
         self,
@@ -386,6 +526,7 @@ class Top5TablePanel(QWidget):
         self.last_source_mtime: float | None = None
         self.columns: list[str] = []
         self.raw_rows: list[dict[str, str]] = []
+        self.visible_rows: list[dict[str, str]] = []
         self.sort_column: str | None = None
         self.sort_desc = True
         self.title_label = QLabel(title)
@@ -398,6 +539,8 @@ class Top5TablePanel(QWidget):
         self.table.horizontalHeader().setStretchLastSection(False)
         self.table.horizontalHeader().setMinimumSectionSize(72)
         self.table.horizontalHeader().sectionClicked.connect(self.handle_header_clicked)
+        self.table.cellDoubleClicked.connect(self.handle_cell_double_clicked)
+        self.table.setToolTip("双击股票名称或股票代码可打开同花顺个股页面")
         self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.table.setStyleSheet(
             "QTableWidget { background: white; gridline-color: #D0D5DD; font-size: 13px; }"
@@ -478,6 +621,16 @@ class Top5TablePanel(QWidget):
             self.sort_column = column
             self.sort_desc = True
         self.render_table()
+
+    def handle_cell_double_clicked(self, row: int, column_index: int) -> None:
+        if row < 0 or row >= len(self.visible_rows):
+            return
+        if column_index < 0 or column_index >= len(self.columns):
+            return
+        column = self.columns[column_index]
+        if column not in {"股票名称", "股票代码"}:
+            return
+        open_stock_in_ths(self.visible_rows[row].get("股票代码", ""), self)
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -594,6 +747,7 @@ class Top5TablePanel(QWidget):
     def render_table(self) -> None:
         columns = self.columns
         rows = self.sorted_rows()
+        self.visible_rows = rows
         self.table.clear()
         self.table.setColumnCount(len(columns))
         self.table.setHorizontalHeaderLabels([self.display_label(column) for column in columns])
@@ -616,6 +770,8 @@ class Top5TablePanel(QWidget):
                 if column == "股票名称":
                     value = f"{value}{suffix_for_code(code)}"
                 item = QTableWidgetItem(self.format_value(column, value))
+                if column in {"股票名称", "股票代码"}:
+                    item.setToolTip("双击打开同花顺个股页面")
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 font = QFont()
                 font.setPointSize(13)
